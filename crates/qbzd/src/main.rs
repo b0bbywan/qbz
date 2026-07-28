@@ -9,6 +9,7 @@ mod lock;
 mod login;
 mod mpris;
 mod paths;
+mod playback_events;
 mod qconnect;
 mod scrobble_engine;
 mod state;

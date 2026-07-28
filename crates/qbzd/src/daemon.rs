@@ -131,6 +131,13 @@ pub async fn run(roots: ProfileRoots, cfg: QbzdConfig, warns: Vec<String>) -> Re
         tokio::runtime::Handle::current(),
     );
 
+    // 10e. Playback-to-bus publisher (CONSOLE): the core never emits the four
+    //      playback events, so every subscriber above (MPRIS, the scrobbler,
+    //      `GET /api/events`) was listening to silence. Spawned LAST: its first
+    //      tick fires immediately, and `broadcast::send` drops events nobody has
+    //      subscribed to yet. Weak<AppRuntime>, joined on shutdown.
+    let playback_events = crate::playback_events::spawn(&booted.runtime, booted.bus.clone());
+
     // 11. HTTP serve (02 §3) on the already-bound socket. `ApiState` carries a
     //     second read-only audio-store connection (WAL) for the status audio
     //     block, the tokio handle for the async queue read, and the opt-in
@@ -208,6 +215,11 @@ pub async fn run(roots: ProfileRoots, cfg: QbzdConfig, warns: Vec<String>) -> Re
     // `Arc<AppRuntime>` clone alive past `drop(booted)` (#521 ordering).
     queue_persist.abort();
     let _ = queue_persist.await;
+    // Stop the playback→bus publisher before the subscribers it feeds. It upgrades
+    // its Weak per tick, so joining here also guarantees no strong `Arc<AppRuntime>`
+    // is in flight when `drop(booted)` releases the audio device (#521 ordering).
+    playback_events.abort();
+    let _ = playback_events.await;
     // Stop the scrobble-on-play subscriber (holds no Arc<AppRuntime>; order-free).
     scrobbler.abort();
     let _ = scrobbler.await;
