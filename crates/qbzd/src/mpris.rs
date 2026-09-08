@@ -24,8 +24,8 @@ use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use qbz_app::shell::AppRuntime;
-use qbz_media_controls::{MediaEvent, MediaIntegration, PlaybackStatus, TrackMeta};
-use qbz_models::{CoreEvent, PlaybackState, QueueTrack};
+use qbz_media_controls::{LoopMode, MediaEvent, MediaIntegration, PlaybackStatus, TrackMeta};
+use qbz_models::{CoreEvent, PlaybackState, QueueTrack, RepeatMode};
 use tokio::runtime::Handle;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -114,6 +114,8 @@ pub fn spawn(
             if let Some(track) = queue.current_track.as_ref() {
                 updater_integ.set_metadata(&track_meta(track));
             }
+            updater_integ.set_shuffle(queue.shuffle);
+            updater_integ.set_loop(map_repeat(queue.repeat));
             let player = rt.core().player();
             let ev = player.get_playback_event();
             last = if ev.is_playing {
@@ -148,6 +150,8 @@ pub fn spawn(
                     }
                 }
                 Ok(CoreEvent::VolumeChanged { volume }) => updater_integ.set_volume(volume as f64),
+                Ok(CoreEvent::ShuffleChanged { enabled }) => updater_integ.set_shuffle(enabled),
+                Ok(CoreEvent::RepeatModeChanged { mode }) => updater_integ.set_loop(map_repeat(mode)),
                 Ok(_) => {}
                 Err(RecvError::Lagged(_)) => continue,
                 Err(RecvError::Closed) => return,
@@ -252,6 +256,16 @@ fn handle_media_event(
                 let _ = core.set_volume((vol as f32).clamp(0.0, 1.0));
             }
         }
+        // Queue-mode writes are async on the core (queue RwLock): spawn them so
+        // the D-Bus thread never blocks on the lock.
+        MediaEvent::SetShuffle(on) => {
+            let rt = rt.clone();
+            handle.spawn(async move { rt.core().set_shuffle(on).await });
+        }
+        MediaEvent::SetLoop(mode) => {
+            let rt = rt.clone();
+            handle.spawn(async move { rt.core().set_repeat_mode(unmap_repeat(mode)).await });
+        }
         // Headless daemon: no window to raise, and self-quit on a media-widget
         // "close" would be surprising — ignore both.
         MediaEvent::Raise | MediaEvent::Quit => {}
@@ -291,6 +305,22 @@ fn track_meta(t: &QueueTrack) -> TrackMeta {
     }
 }
 
+fn map_repeat(m: RepeatMode) -> LoopMode {
+    match m {
+        RepeatMode::Off => LoopMode::Off,
+        RepeatMode::All => LoopMode::All,
+        RepeatMode::One => LoopMode::One,
+    }
+}
+
+fn unmap_repeat(m: LoopMode) -> RepeatMode {
+    match m {
+        LoopMode::Off => RepeatMode::Off,
+        LoopMode::All => RepeatMode::All,
+        LoopMode::One => RepeatMode::One,
+    }
+}
+
 fn map_state(s: PlaybackState) -> PlaybackStatus {
     match s {
         PlaybackState::Playing => PlaybackStatus::Playing,
@@ -304,6 +334,13 @@ fn map_state(s: PlaybackState) -> PlaybackStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeat_and_loop_round_trip() {
+        for m in [RepeatMode::Off, RepeatMode::All, RepeatMode::One] {
+            assert_eq!(unmap_repeat(map_repeat(m)), m);
+        }
+    }
 
     #[test]
     fn map_state_covers_every_playback_state() {

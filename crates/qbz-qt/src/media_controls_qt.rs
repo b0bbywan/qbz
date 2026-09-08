@@ -584,6 +584,14 @@ fn dispatch(ev: MediaEvent) {
         MediaEvent::SetVolume(v) => crate::transport_set_volume((v as f32).clamp(0.0, 1.0)),
         MediaEvent::SetPosition(micros) => seek_to_micros(micros),
         MediaEvent::SeekBy(delta_micros) => seek_by_micros(delta_micros),
+        // Inbound Shuffle/LoopStatus writes carry a TARGET, while the only Qt
+        // entry points are the toggle/cycle steps (`transport_toggle_shuffle`,
+        // `transport_cycle_repeat`), which would flip the wrong way half the
+        // time. Wiring targeted setters through the QConnect gate is the
+        // desktop half of this patch and is not done here; the daemon, which
+        // is what this tree ships, applies both. Dropping the events is the
+        // honest behaviour until then — the getters still report the queue.
+        MediaEvent::SetShuffle(_) | MediaEvent::SetLoop(_) => {}
     }
 }
 

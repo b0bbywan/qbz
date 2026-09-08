@@ -24,7 +24,7 @@ use mpris_server::{
 };
 
 use crate::inhibit::SleepInhibitor;
-use crate::types::{MediaEvent, MediaIntegration, PlaybackStatus, TrackMeta};
+use crate::types::{LoopMode, MediaEvent, MediaIntegration, PlaybackStatus, TrackMeta};
 
 const BUS_SUFFIX: &str = "com.blitzfc.qbz";
 const DESKTOP_ENTRY: &str = "com.blitzfc.qbz";
@@ -53,6 +53,8 @@ struct State {
     /// to choose between a stale clock and a faster poll it does not want.
     position: Time,
     stamped: std::time::Instant,
+    shuffle: bool,
+    loop_status: LoopStatus,
 }
 
 /// Update commands sent from the app to the server thread.
@@ -72,6 +74,8 @@ enum Update {
     /// client to stop extrapolating and re-read. Without it a widget keeps
     /// counting from wherever it was until it happens to poll again.
     Seeked(Time),
+    Shuffle(bool),
+    Loop(LoopStatus),
 }
 
 /// The cloneable handle returned to the app. Pushing state is a non-blocking
@@ -106,6 +110,30 @@ impl MediaIntegration for LinuxHandle {
         let _ = self
             .tx
             .try_send(Update::Seeked(Time::from_micros(position.as_micros() as i64)));
+    }
+
+    fn set_shuffle(&self, on: bool) {
+        let _ = self.tx.try_send(Update::Shuffle(on));
+    }
+
+    fn set_loop(&self, mode: LoopMode) {
+        let _ = self.tx.try_send(Update::Loop(map_loop(mode)));
+    }
+}
+
+fn map_loop(m: LoopMode) -> LoopStatus {
+    match m {
+        LoopMode::Off => LoopStatus::None,
+        LoopMode::All => LoopStatus::Playlist,
+        LoopMode::One => LoopStatus::Track,
+    }
+}
+
+fn unmap_loop(s: LoopStatus) -> LoopMode {
+    match s {
+        LoopStatus::None => LoopMode::Off,
+        LoopStatus::Playlist => LoopMode::All,
+        LoopStatus::Track => LoopMode::One,
     }
 }
 
@@ -236,9 +264,10 @@ impl PlayerInterface for QbzMpris {
         Ok(self.state.lock().unwrap().status)
     }
     async fn loop_status(&self) -> fdo::Result<LoopStatus> {
-        Ok(LoopStatus::None)
+        Ok(self.state.lock().unwrap().loop_status)
     }
-    async fn set_loop_status(&self, _loop_status: LoopStatus) -> zbus::Result<()> {
+    async fn set_loop_status(&self, loop_status: LoopStatus) -> zbus::Result<()> {
+        self.emit(MediaEvent::SetLoop(unmap_loop(loop_status)));
         Ok(())
     }
     async fn rate(&self) -> fdo::Result<PlaybackRate> {
@@ -248,9 +277,10 @@ impl PlayerInterface for QbzMpris {
         Ok(())
     }
     async fn shuffle(&self) -> fdo::Result<bool> {
-        Ok(false)
+        Ok(self.state.lock().unwrap().shuffle)
     }
-    async fn set_shuffle(&self, _shuffle: bool) -> zbus::Result<()> {
+    async fn set_shuffle(&self, shuffle: bool) -> zbus::Result<()> {
+        self.emit(MediaEvent::SetShuffle(shuffle));
         Ok(())
     }
     async fn metadata(&self) -> fdo::Result<Metadata> {
@@ -348,6 +378,14 @@ async fn apply(server: &Server<QbzMpris>, state: &Arc<Mutex<State>>, update: Upd
             }
             let _ = server.emit(Signal::Seeked { position: p }).await;
         }
+        Update::Shuffle(on) => {
+            state.lock().unwrap().shuffle = on;
+            let _ = server.properties_changed([Property::Shuffle(on)]).await;
+        }
+        Update::Loop(l) => {
+            state.lock().unwrap().loop_status = l;
+            let _ = server.properties_changed([Property::LoopStatus(l)]).await;
+        }
     }
 }
 
@@ -377,6 +415,8 @@ pub fn spawn(on_event: EventCb) -> Option<LinuxHandle> {
                     volume: 1.0,
                     position: Time::ZERO,
                     stamped: std::time::Instant::now(),
+                    shuffle: false,
+                    loop_status: LoopStatus::None,
                 }));
                 let imp = QbzMpris {
                     on_event,

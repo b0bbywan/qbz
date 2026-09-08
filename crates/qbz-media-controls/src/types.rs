@@ -42,6 +42,16 @@ pub enum PlaybackStatus {
     Stopped,
 }
 
+/// Queue repeat mode as the OS controls see it (MPRIS `LoopStatus`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopMode {
+    Off,
+    /// Repeat the whole queue (`LoopStatus=Playlist`).
+    All,
+    /// Repeat the current track (`LoopStatus=Track`).
+    One,
+}
+
 /// Inbound events from the OS media controls (media keys, GNOME/KDE widget,
 /// macOS Now Playing, Windows SMTC). Delivered to the callback passed to
 /// [`crate::spawn`]. All time values are MICROSECONDS.
@@ -59,6 +69,10 @@ pub enum MediaEvent {
     SetPosition(i64),
     /// Set volume 0.0..=1.0.
     SetVolume(f64),
+    /// MPRIS `Shuffle` property write.
+    SetShuffle(bool),
+    /// MPRIS `LoopStatus` property write.
+    SetLoop(LoopMode),
     Raise,
     Quit,
 }
@@ -105,4 +119,11 @@ pub trait MediaIntegration: Send + Sync {
     fn seeked(&self, position: Duration) {
         self.set_position(position);
     }
+
+    /// Reflect the queue's shuffle flag. Default no-op: SMTC/MediaRemote have
+    /// no such property, only the MPRIS backend overrides this.
+    fn set_shuffle(&self, _on: bool) {}
+
+    /// Reflect the queue's repeat mode. Default no-op, as for `set_shuffle`.
+    fn set_loop(&self, _mode: LoopMode) {}
 }
